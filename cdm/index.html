@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clinical Data Management</title>
+<style>
+:root{--bg:#f3f6f6;--card:#fff;--ink:#16292b;--mute:#5d7274;--line:#d5e0e0;--pri:#0f6e73;--pri-ink:#fff;--bad:#b3261e;--warn:#9a6700;--ok:#1e7a46;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1819;--card:#16292b;--ink:#e6f0f0;--mute:#93aaab;--line:#27403f;--pri:#4fc3c8;--pri-ink:#062022;--bad:#ff8a80;--warn:#e8b84a;--ok:#6fd49a}}
+:root[data-theme="dark"]{--bg:#0e1819;--card:#16292b;--ink:#e6f0f0;--mute:#93aaab;--line:#27403f;--pri:#4fc3c8;--pri-ink:#062022;--bad:#ff8a80;--warn:#e8b84a;--ok:#6fd49a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}
+header{padding:18px 20px 0;max-width:1000px;margin:auto}
+h1{font:600 1.5rem Georgia,serif;margin:0 0 12px}
+nav{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+nav button{background:none;border:0;padding:10px 14px;color:var(--mute);font:inherit;cursor:pointer;border-bottom:3px solid transparent}
+nav button[aria-selected=true]{color:var(--pri);border-color:var(--pri);font-weight:600}
+main{max-width:1000px;margin:auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+label{display:block;font-size:.85rem;color:var(--mute)}
+input,select,textarea{width:100%;margin-top:3px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+button.p{background:var(--pri);color:var(--pri-ink);border:0;border-radius:6px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+button.s{background:none;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--pri);outline-offset:2px}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.stat b{display:block;font-size:1.6rem}
+.tag{padding:2px 8px;border-radius:10px;font-size:.78rem;border:1px solid currentColor}
+.open{color:var(--bad)}.closed{color:var(--ok)}.warn{color:var(--warn)}
+.msg{color:var(--bad);font-size:.85rem;min-height:1.2em;margin:8px 0}
+.empty{color:var(--mute);padding:12px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+</style>
+</head>
+<body>
+<header>
+<h1>Clinical Data Management</h1>
+<nav role="tablist" id="nav">
+<button role="tab" data-t="dash">Dashboard</button>
+<button role="tab" data-t="sub">Subjects</button>
+<button role="tab" data-t="vis">Visit data</button>
+<button role="tab" data-t="qry">Queries</button>
+</nav>
+</header>
+<main id="main"></main>
+
+<script>
+// ---------- Data layer (localStorage, with in-memory fallback) ----------
+let db={subjects:[],visits:[],queries:[]};
+try{const s=localStorage.getItem("cdm");if(s)db=JSON.parse(s)}catch(e){}
+function save(){try{localStorage.setItem("cdm",JSON.stringify(db))}catch(e){}}
+const uid=p=>p+Math.random().toString(36).slice(2,7).toUpperCase();
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const today=()=>new Date().toISOString().slice(0,10);
+
+// ---------- Validation rules (edit checks) ----------
+const RANGES={sbp:[70,250,"Systolic BP"],dbp:[40,150,"Diastolic BP"],hr:[30,220,"Heart rate"],temp:[34,42,"Temperature"],wt:[2,300,"Weight"]};
+function checkVisit(v,subj){
+  const issues=[];
+  for(const k in RANGES){
+    const [lo,hi,n]=RANGES[k];
+    if(v[k]===""||v[k]==null){issues.push(`${n} is missing`);continue}
+    if(v[k]<lo||v[k]>hi)issues.push(`${n} ${v[k]} is outside ${lo}-${hi}`);
+  }
+  if(v.sbp&&v.dbp&&+v.dbp>=+v.sbp)issues.push("Diastolic BP must be lower than systolic BP");
+  if(v.date>today())issues.push("Visit date is in the future");
+  if(subj&&v.date<subj.consent)issues.push("Visit date is before consent date");
+  return issues;
+}
+
+// ---------- UI ----------
+let tab="dash";
+const main=document.getElementById("main");
+document.getElementById("nav").onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}};
+function render(){
+  document.querySelectorAll("#nav button").forEach(b=>b.setAttribute("aria-selected",b.dataset.t===tab));
+  ({dash,sub,vis,qry})[tab]();
+}
+
+function dash(){
+  const open=db.queries.filter(q=>q.status==="Open").length;
+  main.innerHTML=`<div class="stats">
+  <div class="stat"><b>${db.subjects.length}</b>Subjects enrolled</div>
+  <div class="stat"><b>${db.visits.length}</b>Visits recorded</div>
+  <div class="stat"><b>${open}</b>Open queries</div>
+  <div class="stat"><b>${db.queries.length-open}</b>Closed queries</div></div>
+  <div class="card"><div class="row">
+  <button class="p" id="csv">Export visits to CSV</button>
+  <button class="s" id="demo">Load sample data</button>
+  <button class="s" id="clr">Clear all data</button></div>
+  <p class="empty">Add subjects, enter visit data, and the system raises a query for every value that fails a check.</p></div>`;
+  document.getElementById("csv").onclick=exportCSV;
+  document.getElementById("demo").onclick=sample;
+  document.getElementById("clr").onclick=()=>{if(confirm("Delete all records?")){db={subjects:[],visits:[],queries:[]};save();render()}};
+}
+
+function sub(){
+  main.innerHTML=`<div class="card"><h3>Enroll subject</h3><div class="grid">
+  <label>Initials<input id="ini" maxlength="3"></label>
+  <label>Age<input id="age" type="number"></label>
+  <label>Sex<select id="sex"><option>F</option><option>M</option><option>Other</option></select></label>
+  <label>Consent date<input id="con" type="date" value="${today()}"></label></div>
+  <div class="msg" id="m"></div><button class="p" id="add">Save subject</button></div>
+  <div class="card tw">${db.subjects.length?`<table><tr><th>ID</th><th>Initials</th><th>Age</th><th>Sex</th><th>Consent</th><th>Visits</th></tr>
+  ${db.subjects.map(s=>`<tr><td>${s.id}</td><td>${esc(s.ini)}</td><td>${s.age}</td><td>${s.sex}</td><td>${s.consent}</td><td>${db.visits.filter(v=>v.sid===s.id).length}</td></tr>`).join("")}</table>`:`<div class="empty">No subjects yet. Enroll the first one above.</div>`}</div>`;
+  document.getElementById("add").onclick=()=>{
+    const ini=val("ini").trim().toUpperCase(),age=+val("age"),consent=val("con"),m=document.getElementById("m");
+    if(!ini)return m.textContent="Enter the subject's initials.";
+    if(!(age>=18&&age<=100))return m.textContent="Age must be between 18 and 100.";
+    if(!consent)return m.textContent="Enter the consent date.";
+    db.subjects.push({id:"S"+String(db.subjects.length+1).padStart(3,"0"),ini,age,sex:val("sex"),consent});
+    save();render();
+  };
+}
+
+function vis(){
+  if(!db.subjects.length){main.innerHTML=`<div class="card empty">Enroll a subject first, then enter visit data.</div>`;return}
+  main.innerHTML=`<div class="card"><h3>Enter visit data</h3><div class="grid">
+  <label>Subject<select id="sid">${db.subjects.map(s=>`<option value="${s.id}">${s.id} (${esc(s.ini)})</option>`).join("")}</select></label>
+  <label>Visit<select id="vn"><option>Screening</option><option>Week 2</option><option>Week 4</option><option>Week 8</option></select></label>
+  <label>Date<input id="dt" type="date" value="${today()}"></label>
+  <label>Systolic BP (mmHg)<input id="sbp" type="number"></label>
+  <label>Diastolic BP (mmHg)<input id="dbp" type="number"></label>
+  <label>Heart rate (bpm)<input id="hr" type="number"></label>
+  <label>Temperature (°C)<input id="temp" type="number" step="0.1"></label>
+  <label>Weight (kg)<input id="wt" type="number" step="0.1"></label></div>
+  <div class="msg" id="m"></div><button class="p" id="add">Save visit</button></div>
+  <div class="card tw">${db.visits.length?`<table><tr><th>Subject</th><th>Visit</th><th>Date</th><th>SBP</th><th>DBP</th><th>HR</th><th>Temp</th><th>Wt</th><th>Queries</th></tr>
+  ${db.visits.map(v=>`<tr><td>${v.sid}</td><td>${v.vn}</td><td>${v.date}</td><td>${v.sbp}</td><td>${v.dbp}</td><td>${v.hr}</td><td>${v.temp}</td><td>${v.wt}</td><td>${db.queries.filter(q=>q.vid===v.id).length}</td></tr>`).join("")}</table>`:`<div class="empty">No visits recorded yet.</div>`}</div>`;
+  document.getElementById("add").onclick=()=>{
+    const v={id:uid("V"),sid:val("sid"),vn:val("vn"),date:val("dt")};
+    for(const k in RANGES)v[k]=val(k)===""?"":+val(k);
+    const m=document.getElementById("m");
+    if(!v.date)return m.textContent="Enter the visit date.";
+    if(db.visits.some(x=>x.sid===v.sid&&x.vn===v.vn))return m.textContent="This subject already has data for that visit.";
+    db.visits.push(v);
+    checkVisit(v,db.subjects.find(s=>s.id===v.sid)).forEach(t=>db.queries.push({id:uid("Q"),vid:v.id,sid:v.sid,vn:v.vn,text:t,status:"Open",resp:"",created:today()}));
+    save();render();
+  };
+}
+
+function qry(){
+  main.innerHTML=`<div class="card tw">${db.queries.length?`<table><tr><th>Subject</th><th>Visit</th><th>Issue</th><th>Status</th><th>Resolution note</th><th></th></tr>
+  ${db.queries.map(q=>`<tr><td>${q.sid}</td><td>${q.vn}</td><td>${esc(q.text)}</td>
+  <td><span class="tag ${q.status==="Open"?"open":"closed"}">${q.status}</span></td>
+  <td>${q.status==="Open"?`<input data-n="${q.id}" placeholder="Explain or correct" style="min-width:200px">`:esc(q.resp)}</td>
+  <td>${q.status==="Open"?`<button class="s" data-c="${q.id}">Close query</button>`:""}</td></tr>`).join("")}</table>`:`<div class="empty">No queries. Every entered value has passed its checks.</div>`}</div>`;
+  main.querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>{
+    const q=db.queries.find(x=>x.id===b.dataset.c),note=main.querySelector(`[data-n="${q.id}"]`).value.trim();
+    if(!note){note.focus;alert("Add a resolution note before closing.");return}
+    q.status="Closed";q.resp=note;save();render();
+  });
+}
+
+function val(id){return document.getElementById(id).value}
+function exportCSV(){
+  const cols=["sid","vn","date","sbp","dbp","hr","temp","wt"];
+  const rows=[cols.join(",")].concat(db.visits.map(v=>cols.map(c=>v[c]).join(",")));
+  const a=document.createElement("a");
+  a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.join("\n"));
+  a.download="visits.csv";a.click();
+}
+function sample(){
+  db.subjects.push({id:"S001",ini:"AK",age:54,sex:"F",consent:"2026-09-01"},{id:"S002",ini:"RM",age:61,sex:"M",consent:"2026-09-03"});
+  const vs=[{sid:"S001",vn:"Screening",date:"2026-09-02",sbp:128,dbp:82,hr:74,temp:36.7,wt:68},{sid:"S002",vn:"Screening",date:"2026-09-04",sbp:300,dbp:90,hr:80,temp:36.9,wt:82}];
+  vs.forEach(v=>{v.id=uid("V");db.visits.push(v);checkVisit(v,db.subjects.find(s=>s.id===v.sid)).forEach(t=>db.queries.push({id:uid("Q"),vid:v.id,sid:v.sid,vn:v.vn,text:t,status:"Open",resp:"",created:today()}))});
+  save();render();
+}
+render();
+</script>
+</body>
+</html>
